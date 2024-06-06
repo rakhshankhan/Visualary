@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @NoArgsConstructor
-public class ChatPrompt implements Serializable {
+public class Message implements Serializable {
 
     @Serial private static final long serialVersionUID = 5342294607419435190L;
 
@@ -28,12 +28,21 @@ public class ChatPrompt implements Serializable {
     @Column(name = "content")
     private String content;
 
+    @Column(name = "unprocessed_content")
+    private String unprocessedContent;
+
     @Column(name = "timestamp")
     private LocalDateTime timestamp;
 
-    public ChatPrompt(String role, String content, LocalDateTime timestamp) {
+    @ManyToOne
+    @JoinColumn(name = "chat_id", nullable = false)
+    private Chat chat;
+
+    public Message(String role, String content, String unprocessedContent, LocalDateTime timestamp, Chat chat) {
         this.role = role;
         this.content = content;
+        this.unprocessedContent = unprocessedContent;
         this.timestamp = timestamp;
+        this.chat = chat;
     }
 }

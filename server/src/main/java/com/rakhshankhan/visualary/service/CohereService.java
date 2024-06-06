@@ -6,9 +6,9 @@ import com.cohere.api.types.ChatMessage;
 import com.cohere.api.types.ChatMessageRole;
 import com.cohere.api.types.NonStreamedChatResponse;
 import com.rakhshankhan.visualary.model.dto.ChatDTO;
-import com.rakhshankhan.visualary.model.dto.ChatPromptDTO;
-import com.rakhshankhan.visualary.model.entity.ChatPrompt;
-import com.rakhshankhan.visualary.model.entity.ChatPromptRepository;
+import com.rakhshankhan.visualary.model.dto.ChatInfoDTO;
+import com.rakhshankhan.visualary.model.dto.ChatMessageDTO;
+import com.rakhshankhan.visualary.model.entity.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.stereotype.Service;
@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 @EnableAsync
@@ -23,25 +24,50 @@ public class CohereService {
 
     private final Cohere cohere;
 
-    private final ChatPromptRepository chatPromptRepository;
+    private final ChatMessageRepository chatMessageRepository;
 
-    public CohereService(@Value("${cohere.api.key}") String cohereApiKey, ChatPromptRepository chatPromptRepository) {
+    private final ChatRepository chatRepository;
+
+    private final UserRepository userRepository;
+
+    public CohereService(
+            @Value("${cohere.api.key}") String cohereApiKey,
+            ChatMessageRepository chatMessageRepository,
+            ChatRepository chatRepository,
+            UserRepository userRepository) {
         this.cohere = Cohere.builder()
                 .token(cohereApiKey)
                 .clientName("snippet")
                 .build();
-        this.chatPromptRepository = chatPromptRepository;
+        this.chatMessageRepository = chatMessageRepository;
+        this.chatRepository = chatRepository;
+        this.userRepository = userRepository;
     }
 
-    public ChatDTO generateText(String prompt) {
+    public ChatDTO generateText(String prompt, Integer userId, Integer chatId) {
+        Optional<User> user = userRepository.findById(userId);
+
+        if (user.isEmpty()) {
+            throw new RuntimeException("User not found");
+        }
+
+        Chat chat = chatRepository.findByChatIdAndOwner(chatId, user.get());
+
+        if (chat == null) {
+            chat = new Chat();
+            chat.setOwner(user.get());
+            chat.setChatId(chatId);
+            chatRepository.save(chat);
+        }
+
         String processedPrompt = processPrompt(prompt);
 
-        List<ChatPrompt> chatPrompts = chatPromptRepository.findAllByOrderByTimestampAsc();
+        List<Message> messages = chatMessageRepository.findAllByChatIdOrderByTimestampAsc(chat.getId());
 
         List<ChatMessage> chatHistory = new ArrayList<>();
 
-        if (chatPrompts != null && !chatPrompts.isEmpty()) {
-            chatHistory = chatPrompts.stream()
+        if (messages != null && !messages.isEmpty()) {
+            chatHistory = messages.stream()
                     .map(chatPrt -> ChatMessage.builder()
                             .role(chatPrt.getRole().equals("user") ? ChatMessageRole.USER : ChatMessageRole.CHATBOT)
                             .message(chatPrt.getContent())
@@ -58,32 +84,88 @@ public class CohereService {
         NonStreamedChatResponse response = cohere.chat(request);
 
         // Add user prompt and bot response to db
-        chatPromptRepository.save(new ChatPrompt("user", processedPrompt, LocalDateTime.now()));
+        chatMessageRepository.save(new Message("user", processedPrompt, prompt, LocalDateTime.now(), chat));
 
         String chatBotReply = response.getText();
 
         if (chatBotReply != null && !chatBotReply.isEmpty()) {
-            chatPromptRepository.save(new ChatPrompt("bot", chatBotReply, LocalDateTime.now()));
+            chatMessageRepository.save(new Message("bot", chatBotReply, null, LocalDateTime.now(), chat));
         }
 
         // Retrieve chat history again to fix initial prompt and reply being added to history
-        chatPrompts = chatPromptRepository.findAllByOrderByTimestampAsc();
+        messages = chatMessageRepository.findAllByChatIdOrderByTimestampAsc(chat.getId());
 
-        List<ChatPromptDTO> chatHistoryDTO = new ArrayList<>();
+        List<ChatMessageDTO> chatHistoryDTO = new ArrayList<>();
 
-        if (chatPrompts != null && !chatPrompts.isEmpty()) {
-            chatHistoryDTO = chatPrompts.stream()
-                    .map(chatPrt -> new ChatPromptDTO(chatPrt.getRole(),
-                            chatPrt.getRole().equals("user") ? prompt : chatPrt.getContent(),
+        if (messages != null && !messages.isEmpty()) {
+            chatHistoryDTO = messages.stream()
+                    .map(chatPrt -> new ChatMessageDTO(
+                            chatPrt.getRole(),
+                            chatPrt.getRole().equals("user") ? chatPrt.getUnprocessedContent() : chatPrt.getContent(),
                             chatPrt.getTimestamp()))
                     .toList();
         }
 
-        return new ChatDTO(chatBotReply, chatHistoryDTO);
+        return new ChatDTO(userId, chatBotReply, chatHistoryDTO);
     }
 
-    public void clearChatHistory() {
-        chatPromptRepository.deleteAll();
+    public List<ChatInfoDTO> getAllUserChats(Integer userId) {
+        Optional<User> user = userRepository.findById(userId);
+
+        if (user.isEmpty()) {
+            throw new RuntimeException("User not found");
+        }
+
+        List<Chat> chats = chatRepository.findByOwner(user.get());
+
+        // Mapping Chat to ChatDTO
+        return chats.stream().map(chat -> {
+            List<Message> messages = chatMessageRepository.findAllByChatIdOrderByTimestampAsc(chat.getId());
+            List<ChatMessageDTO> chatHistory = new ArrayList<>();
+
+            if (messages != null && !messages.isEmpty()) {
+                chatHistory = messages.stream()
+                        .map(message -> new ChatMessageDTO(
+                                message.getRole(),
+                                message.getRole().equals("user") ? message.getUnprocessedContent() : message.getContent(),
+                                message.getTimestamp()))
+                        .toList();
+            }
+
+            return new ChatInfoDTO(userId, chat.getChatId(), chatHistory);
+        }).toList();
+    }
+
+    public void deleteUserChatById(Integer userId, Integer chatId) {
+        Optional<User> user = userRepository.findById(userId);
+
+        if (user.isEmpty()) {
+            throw new RuntimeException("User not found");
+        }
+
+        Chat chat = chatRepository.findByChatIdAndOwner(chatId, user.get());
+
+        if (chat != null) {
+            chatRepository.delete(chat);
+        } else {
+            throw new RuntimeException("Chat does not exist.");
+        }
+    }
+
+    public void deleteAllUserChats(Integer userId) {
+        Optional<User> user = userRepository.findById(userId);
+
+        if (user.isEmpty()) {
+            throw new RuntimeException("User not found");
+        }
+
+        List<Chat> chats = chatRepository.findByOwner(user.get());
+
+        if (chats != null) {
+            chatRepository.deleteByOwner(user.get());
+        } else {
+            throw new RuntimeException("Chats do not exist.");
+        }
     }
 
     public String processPrompt(String ogPrompt) {
