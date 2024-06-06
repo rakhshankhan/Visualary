@@ -9,10 +9,10 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @EqualsAndHashCode
-public class ChatDTO {
+public class ChatInfoDTO {
 
     private Integer userId;
-    private String latestReply;
+    private Integer chatId;
     private List<ChatMessageDTO> chatHistory;
 
 }

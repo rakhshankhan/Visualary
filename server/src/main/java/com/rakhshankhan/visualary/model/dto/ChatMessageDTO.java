@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @EqualsAndHashCode
-public class ChatPromptDTO {
+public class ChatMessageDTO {
 
     private String role;
     private String content;
